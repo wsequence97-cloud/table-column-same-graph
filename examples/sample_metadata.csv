@@ -1,0 +1,14 @@
+database_name,table_name,table_coment,column_name,column_type,column_comment,is_del
+zz,dwd_trade_order_pay_detail_di,dwd-交易域-订单域-订单支付明细-增量表,pay_id,string,支付号,0
+zz,dwd_trade_order_pay_detail_di,dwd-交易域-订单域-订单支付明细-增量表,order_id,string,订单号,0
+zz,dwd_trade_order_pay_detail_di,dwd-交易域-订单域-订单支付明细-增量表,pay_amt,decimal(18,2),支付金额,0
+zz,dwd_trade_order_pay_detail_di,dwd-交易域-订单域-订单支付明细-增量表,pay_time,string,支付时间,0
+zz,dwd_trade_order_payment_detail_di,dwd-交易域-订单域-订单付款明细-增量表,payment_id,string,付款号,0
+zz,dwd_trade_order_payment_detail_di,dwd-交易域-订单域-订单付款明细-增量表,order_id,string,订单号,0
+zz,dwd_trade_order_payment_detail_di,dwd-交易域-订单域-订单付款明细-增量表,payment_amt,decimal(18,2),付款金额,0
+zz,dwd_trade_order_payment_detail_di,dwd-交易域-订单域-订单付款明细-增量表,payment_time,string,付款时间,0
+zz,dwd_user_login_detail_di,dwd-用户域-登录域-用户登录明细-增量表,user_id,string,用户号,0
+zz,dwd_user_login_detail_di,dwd-用户域-登录域-用户登录明细-增量表,login_time,string,登录时间,0
+zz,dwd_user_login_detail_di,dwd-用户域-登录域-用户登录明细-增量表,login_ip,string,登录IP,0
+zz,ads_trade_pay_summary_1d,ads-交易域-支付汇总-1日表,pay_amt_1d,decimal(18,2),支付金额,0
+zz,ads_trade_pay_summary_30d,ads-交易域-支付汇总-30日表,pay_amt_30d,decimal(18,2),支付金额,0
