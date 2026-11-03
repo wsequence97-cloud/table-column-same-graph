@@ -30,22 +30,6 @@ class SimilarityConfig:
 
 
 @dataclass(frozen=True)
-class HiveConfig:
-    """Hive 元数据读取配置。"""
-
-    # 用户指定的 JDBC 连接串，用于 README 和状态记录。
-    jdbc_url: str = "jdbc:hive2://180.184.31.191:10000"
-    # PyHive 实际需要 host 和 port，不直接消费 JDBC 字符串。
-    host: str = "180.184.31.191"
-    port: int = 10000
-    # 元数据表固定为用户提供的 Hive 表。
-    database: str = "zz"
-    table: str = "dwd_meta_table_columns_detail_df"
-    # 默认读取最新分区，SQL 会通过 max(pt) 获取。
-    partition_column: str = "pt"
-
-
-@dataclass(frozen=True)
 class RuntimeConfig:
     """默认运行目录配置。"""
 
@@ -65,14 +49,30 @@ class LLMReviewConfig:
     # 默认 required，符合“输出前必须由模型判断”的治理要求。
     review_mode: str = os.getenv("SAME_GRAPH_LLM_REVIEW_MODE", "required")
     # 兼容 OpenAI 或企业内部 OpenAI-compatible 网关。
-    api_base: str = os.getenv("SAME_GRAPH_LLM_API_BASE", "https://way.ydata.vip/v1")
-    api_key: str = os.getenv("SAME_GRAPH_LLM_API_KEY", "sk-xluhLSmOi9MsoAPOQrVrsexxz2BoTjLZ2PSqyFM8ExAUpnAj")
+    api_base: str = os.getenv("SAME_GRAPH_LLM_API_BASE", "")
+    api_key: str = os.getenv("SAME_GRAPH_LLM_API_KEY", "")
     model: str = os.getenv("SAME_GRAPH_LLM_MODEL", "gpt-5.5")
     timeout_seconds: int = int(os.getenv("SAME_GRAPH_LLM_TIMEOUT_SECONDS", "60"))
     batch_size: int = int(os.getenv("SAME_GRAPH_LLM_BATCH_SIZE", "20"))
 
 
 SIMILARITY_CONFIG = SimilarityConfig()
-HIVE_CONFIG = HiveConfig()
 RUNTIME_CONFIG = RuntimeConfig()
 LLM_REVIEW_CONFIG = LLMReviewConfig()
+
+
+@dataclass(frozen=True)
+class MCPConfig:
+    server_url: str
+    tool_name: str
+    auth_token: str
+    timeout_seconds: float
+    page_size: int
+
+    @classmethod
+    def from_env(cls):
+        return cls(os.getenv("MCP_SERVER_URL", "").strip(),
+                   os.getenv("MCP_TOOL_NAME", "query_field_metadata").strip(),
+                   os.getenv("MCP_AUTH_TOKEN", ""),
+                   float(os.getenv("MCP_TIMEOUT_SECONDS", "60")),
+                   int(os.getenv("MCP_PAGE_SIZE", "1000")))

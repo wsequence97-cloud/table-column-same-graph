@@ -8,7 +8,7 @@ from typing import Dict, List
 
 from langgraph.graph import END, StateGraph
 
-from table_column_same_graph.config import HIVE_CONFIG, LLM_REVIEW_CONFIG, RUNTIME_CONFIG
+from table_column_same_graph.config import LLM_REVIEW_CONFIG, RUNTIME_CONFIG
 from table_column_same_graph.data_source import load_metadata_rows
 from table_column_same_graph.llm_review import review_matches_with_llm
 from table_column_same_graph.memory import load_memory_records, persist_memory
@@ -73,15 +73,12 @@ def build_graph():
 def prepare_runtime_node(state: GraphState) -> Dict:
     """补齐运行默认值。
 
-    CLI 可以只传 user_input；目录、Hive 地址、数据源类型在这里统一补齐。
+    CLI 可以只传 user_input；目录和模型配置在这里统一补齐。
     """
 
     return {
-        "source_type": state.get("source_type") or "hive",
-        "metadata_csv": state.get("metadata_csv", ""),
         "output_dir": state.get("output_dir") or str(RUNTIME_CONFIG.output_dir),
         "memory_dir": state.get("memory_dir") or str(RUNTIME_CONFIG.memory_dir),
-        "hive_jdbc_url": state.get("hive_jdbc_url") or HIVE_CONFIG.jdbc_url,
         "llm_review_mode": state.get("llm_review_mode") or LLM_REVIEW_CONFIG.review_mode,
         "llm_api_base": state.get("llm_api_base") or LLM_REVIEW_CONFIG.api_base,
         "llm_api_key": state.get("llm_api_key") or LLM_REVIEW_CONFIG.api_key,
@@ -106,14 +103,11 @@ def parse_user_input_node(state: GraphState) -> Dict:
     return update
 
 
-def load_metadata_node(state: GraphState) -> Dict:
-    """读取 Hive 或 CSV 元数据。"""
+async def load_metadata_node(state: GraphState) -> Dict:
+    """通过 MCP 读取元数据及快照。"""
 
-    rows = load_metadata_rows(
-        source_type=state.get("source_type", "hive"),
-        metadata_csv=state.get("metadata_csv", ""),
-    )
-    return {"metadata_rows": rows}
+    rows, snapshot = await load_metadata_rows()
+    return {"metadata_rows": rows, "metadata_snapshot_pt": snapshot}
 
 
 def load_memory_node(state: GraphState) -> Dict:

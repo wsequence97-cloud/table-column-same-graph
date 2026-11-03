@@ -1,10 +1,10 @@
 """命令行入口。
 
-示例：
-python -m table_column_same_graph.cli --query "表 dwd_trade_order_pay_detail_di" --source csv --metadata-csv examples/sample_metadata.csv
+示例：python -m table_column_same_graph.cli --query "表 dwd_trade_order_pay_detail_di"
 """
 
 import argparse
+import asyncio
 from pathlib import Path
 from typing import List
 
@@ -17,8 +17,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="相似数据表/字段识别 LangGraph")
     parser.add_argument("--query", required=True, help="用户输入，例如：表 dwd_trade_order_pay_detail_di / 字段 pay_id / 全表比对")
-    parser.add_argument("--source", choices=["hive", "csv"], default="hive", help="元数据来源，默认 hive")
-    parser.add_argument("--metadata-csv", default="", help="source=csv 时传入本地元数据 CSV 路径")
     parser.add_argument("--output-dir", default=str(RUNTIME_CONFIG.output_dir), help="CSV 输出目录")
     parser.add_argument("--memory-dir", default=str(RUNTIME_CONFIG.memory_dir), help="相似检索记忆目录")
     parser.add_argument(
@@ -40,11 +38,9 @@ def main(argv: List[str] = None) -> int:
 
     args = build_parser().parse_args(argv)
     graph = build_graph()
-    result = graph.invoke(
+    result = asyncio.run(graph.ainvoke(
         {
             "user_input": args.query,
-            "source_type": args.source,
-            "metadata_csv": args.metadata_csv,
             "output_dir": str(Path(args.output_dir).expanduser()),
             "memory_dir": str(Path(args.memory_dir).expanduser()),
             "llm_review_mode": args.llm_review_mode,
@@ -54,10 +50,11 @@ def main(argv: List[str] = None) -> int:
             "llm_timeout_seconds": args.llm_timeout_seconds,
             "llm_batch_size": args.llm_batch_size,
         }
-    )
+    ))
     print(f"CSV 输出文件：{result.get('output_file', '')}")
     print(f"匹配意图：{result.get('intent', '')}")
     print(f"元数据行数：{len(result.get('metadata_rows', []))}")
+    print(f"元数据快照：{result.get('metadata_snapshot_pt', '')}")
     print(f"模型复判：{result.get('llm_review_summary', {})}")
     print(f"记忆已沉淀：{bool(result.get('memory_summary'))}")
     return 0

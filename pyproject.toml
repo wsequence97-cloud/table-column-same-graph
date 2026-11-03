@@ -7,10 +7,10 @@ name = "table-column-same-graph"
 version = "0.1.0"
 description = "LangGraph workflow for similar Hive warehouse table and column discovery."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
   "langgraph>=0.2.0,<0.3.0",
-  "pyhive[hive]>=0.7.0",
+  "mcp>=2,<3",
 ]
 
 [project.optional-dependencies]

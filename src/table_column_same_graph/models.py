@@ -100,16 +100,10 @@ class GraphState(TypedDict, total=False):
 
     # 用户原始输入，一般来自 CLI 的 --query。
     user_input: str
-    # CLI 或调用方传入的数据源类型：hive 或 csv。
-    source_type: str
-    # CSV 数据源路径；source_type=csv 时必填。
-    metadata_csv: str
     # 输出目录，默认写到项目 outputs 下。
     output_dir: str
     # 记忆沉淀目录，默认写到项目 memory 下。
     memory_dir: str
-    # Hive JDBC 地址字符串，仅用于记录和兼容用户需求；实际 PyHive 使用 host/port。
-    hive_jdbc_url: str
     # 解析出的意图。
     intent: Intent
     # 原始输入是否包含 create table/create view DDL。
@@ -120,6 +114,7 @@ class GraphState(TypedDict, total=False):
     source_column: ColumnInfo
     # 从数据源加载出的字段粒度元数据。
     metadata_rows: List[MetadataRow]
+    metadata_snapshot_pt: str
     # 表相似候选或最终结果。
     table_matches: List[TableMatch]
     # 字段相似结果。
