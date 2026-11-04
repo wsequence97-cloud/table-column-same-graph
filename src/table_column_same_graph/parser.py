@@ -4,7 +4,7 @@
 """
 
 import re
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from table_column_same_graph.models import ColumnInfo, Intent, TableInfo
 from table_column_same_graph.text_utils import normalize_identifier
@@ -12,33 +12,95 @@ from table_column_same_graph.text_utils import normalize_identifier
 
 CREATE_DDL_RE = re.compile(r"\bcreate\s+(?:external\s+)?(?:table|view)\b", re.IGNORECASE)
 
+IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+COLUMN_IDENT = rf"(?:{IDENT}|`{IDENT}`)"
+TABLE_IDENT = rf"{COLUMN_IDENT}(?:\.{COLUMN_IDENT})?"
+COLUMN_DEF = re.compile(rf"{COLUMN_IDENT}\s+[A-Za-z][A-Za-z0-9_]*(?:\s*\([^()]*\)|\s*<[^<>]+>)?(?:\s+COMMENT\s+('[^']*'|\"[^\"]*\"))?\s*", re.I)
+DDL_HEAD = re.compile(rf"^CREATE\s+(?:EXTERNAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({TABLE_IDENT})\s*\(", re.I)
+DDL_TAIL = re.compile(r"""\s*(?:COMMENT\s+(?:'[^']*'|"[^"]*"))?\s*(?:PARTITIONED\s+BY\s*\([^()]*\))?\s*(?:STORED\s+AS\s+\w+)?\s*(?:TBLPROPERTIES\s*\([^()]*\))?\s*;?\s*""", re.I | re.S)
+EXAMPLES = "表 dwd_trade_order_pay_detail_di\n字段 pay_amt_30d\n全表比对\n全字段比对"
+MESSAGES = {'FORMAT_ERROR': '输入格式不符合要求', 'MISSING_TARGET': '缺少查询对象', 'INVALID_DDL': 'DDL 不完整或格式无效', 'UNSUPPORTED': '不支持的输入格式'}
+
+
+def _invalid(code: str, suggestion: str = EXAMPLES, detected_type: str = '', target: str = '') -> Dict[str, Any]:
+    return {'validation_status': 'INVALID', 'error_code': code, 'message': MESSAGES[code],
+            'suggestion': suggestion, 'detected_type': detected_type, 'extracted_target': target}
+
+
+def _hint_invalid(text: str) -> Dict[str, Any]:
+    """只生成提示，不将提取结果用作查询。"""
+    table = re.search(r'\b(?:ods|dwd|dws|ads|dim)_[A-Za-z0-9_]+\b', text, re.I)
+    if table:
+        target = table.group()
+        return _invalid('FORMAT_ERROR', f'表 {target}', 'table', target)
+    field = re.search(r'\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b', text)
+    if field and ('字段' in text or '指标' in text):
+        target = field.group()
+        return _invalid('FORMAT_ERROR', f'字段 {target}', 'column', target)
+    return _invalid('UNSUPPORTED')
+
+
+def _valid_ddl(text: str) -> bool:
+    head = DDL_HEAD.match(text)
+    if not head:
+        return False
+    end = _find_first_parenthesized_block_end(text)
+    if end < 0:
+        return False
+    block = text[head.end():end - 1]
+    if block.rstrip().endswith(','):
+        return False
+    parts = _split_column_lines(block)
+    if not parts or any(not COLUMN_DEF.fullmatch(part) for part in parts):
+        return False
+    tail = text[end:].strip()
+    if not DDL_TAIL.fullmatch(tail):
+        return False
+    table = parse_table_ddl(text)
+    return bool(table.table_name and len(table.columns) == len(parts))
+
+
+def validate_input(user_input: str) -> Dict[str, Any]:
+    """白名单校验；不接受自然语言自动修正后执行。"""
+    text = (user_input or '').strip()
+    commands = {'全表比对': 'all_tables', '全字段比对': 'all_columns', '全指标比对': 'all_columns'}
+    if text in commands:
+        return {'validation_status': 'VALID', 'intent': commands[text], 'has_ddl': False}
+    if any(text.startswith(command) for command in commands):
+        return _invalid('UNSUPPORTED')
+    prefix = re.match(r'^(字段|表)(?:\s*[:：]\s*|\s+)(.*)$', text, re.S)
+    if text in ('表', '字段'):
+        return _invalid('MISSING_TARGET')
+    kind, target = (prefix.group(1), prefix.group(2).strip()) if prefix else ('', text)
+    if prefix and not target:
+        return _invalid('MISSING_TARGET')
+    if re.match(r'^CREATE\b', target, re.I):
+        if kind == '字段' or not _valid_ddl(target):
+            return _invalid('INVALID_DDL')
+        return {'validation_status': 'VALID', 'intent': 'single_table', 'has_ddl': True, 'source_table': parse_table_ddl(target)}
+    if not prefix:
+        return _hint_invalid(text)
+    if kind == '表' and re.fullmatch(TABLE_IDENT, target):
+        return {'validation_status': 'VALID', 'intent': 'single_table', 'has_ddl': False, 'source_table': TableInfo(table_name=normalize_identifier(target))}
+    if kind == '字段' and (re.fullmatch(COLUMN_IDENT, target) or COLUMN_DEF.fullmatch(target)):
+        return {'validation_status': 'VALID', 'intent': 'single_column', 'has_ddl': False, 'source_column': parse_column_input(text)}
+    if re.fullmatch(r'[\u4e00-\u9fff][\u4e00-\u9fff0-9A-Za-z_-]*', target) and not any(word in target for word in ('是什么意思', '怎么', '如何', '查询一下', '帮我')):
+        if kind == '表':
+            return {'validation_status': 'VALID', 'intent': 'single_table', 'has_ddl': False, 'source_table': TableInfo(table_comment=target)}
+        return {'validation_status': 'VALID', 'intent': 'single_column', 'has_ddl': False, 'source_column': ColumnInfo(column_comment=target)}
+    return _invalid('FORMAT_ERROR')
+
 
 def detect_intent(user_input: str) -> Tuple[Intent, bool]:
     """识别用户输入意图。
 
-    规则顺序很重要：
-    1. 全表/全字段口令优先；
-    2. 明确“字段”前缀走字段单次查询；
-    3. 明确“表”前缀或 DDL 走表单次查询；
-    4. 不规范输入按用户要求默认走数据表相似查询。
+    通过白名单后返回意图，非法输入抛出 ValueError。
     """
 
-    text = (user_input or "").strip()
-    lowered = text.lower()
-    has_ddl = bool(CREATE_DDL_RE.search(text))
-
-    if "全表比对" in text:
-        return "all_tables", has_ddl
-    if "全字段比对" in text or "全指标比对" in text:
-        return "all_columns", has_ddl
-    if text.startswith("字段"):
-        return "single_column", has_ddl
-    if text.startswith("表") or has_ddl:
-        return "single_table", has_ddl
-    # column string comment '' 这种字段片段如果没有“字段”前缀，仍可识别为字段。
-    if re.search(r"^\s*`?[a-zA-Z_][\w]*`?\s+\w+.*\bcomment\b", lowered, re.IGNORECASE):
-        return "single_column", has_ddl
-    return "single_table", has_ddl
+    result = validate_input(user_input)
+    if result['validation_status'] != 'VALID':
+        raise ValueError(result['message'])
+    return result['intent'], result['has_ddl']
 
 
 def strip_intent_prefix(user_input: str) -> str:
@@ -140,7 +202,7 @@ def parse_column_definition(raw_column: str) -> ColumnInfo:
     if not text or text.lower().startswith(("partitioned", "stored", "tblproperties", "comment", "primary")):
         return ColumnInfo()
 
-    match = re.match(r"`?([a-zA-Z_][\w]*)`?\s+([a-zA-Z0-9_<>(),]+)(.*)$", text, re.IGNORECASE | re.DOTALL)
+    match = re.match(r"`?([a-zA-Z_][\w]*)`?\s+([a-zA-Z][a-zA-Z0-9_]*(?:\s*\([^()]*\)|\s*<[^<>]+>)?)(.*)$", text, re.IGNORECASE | re.DOTALL)
     if not match:
         return ColumnInfo()
 

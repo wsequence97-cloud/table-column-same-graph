@@ -51,6 +51,10 @@ def main(argv: List[str] = None) -> int:
             "llm_batch_size": args.llm_batch_size,
         }
     ))
+    if result.get("validation_status") == "INVALID":
+        print(f"输入校验失败：{result['message']}")
+        print(f"建议输入：\n{result['suggestion']}")
+        return 2
     print(f"CSV 输出文件：{result.get('output_file', '')}")
     print(f"匹配意图：{result.get('intent', '')}")
     print(f"元数据行数：{len(result.get('metadata_rows', []))}")

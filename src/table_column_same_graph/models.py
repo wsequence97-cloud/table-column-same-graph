@@ -100,6 +100,12 @@ class GraphState(TypedDict, total=False):
 
     # 用户原始输入，一般来自 CLI 的 --query。
     user_input: str
+    validation_status: str
+    error_code: str
+    message: str
+    suggestion: str
+    detected_type: str
+    extracted_target: str
     # 输出目录，默认写到项目 outputs 下。
     output_dir: str
     # 记忆沉淀目录，默认写到项目 memory 下。

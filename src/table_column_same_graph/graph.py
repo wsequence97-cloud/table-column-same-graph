@@ -14,7 +14,7 @@ from table_column_same_graph.llm_review import review_matches_with_llm
 from table_column_same_graph.memory import load_memory_records, persist_memory
 from table_column_same_graph.models import ColumnMatch, GraphState, TableMatch
 from table_column_same_graph.output import write_matches_to_csv
-from table_column_same_graph.parser import detect_intent, parse_column_input, parse_table_input
+from table_column_same_graph.parser import parse_column_input, parse_table_input, validate_input
 from table_column_same_graph.similarity import (
     find_all_column_matches,
     find_all_table_matches,
@@ -48,7 +48,7 @@ def build_graph():
 
     graph.set_entry_point("prepare_runtime")
     graph.add_edge("prepare_runtime", "parse_user_input")
-    graph.add_edge("parse_user_input", "load_metadata")
+    graph.add_conditional_edges("parse_user_input", route_by_validation, {"VALID": "load_metadata", "INVALID": END})
     graph.add_edge("load_metadata", "load_memory")
     graph.add_conditional_edges(
         "load_memory",
@@ -93,14 +93,17 @@ def parse_user_input_node(state: GraphState) -> Dict:
     """解析用户输入为意图、源表或源字段。"""
 
     user_input = state.get("user_input", "")
-    intent, has_ddl = detect_intent(user_input)
-    update: Dict = {"intent": intent, "has_ddl": has_ddl}
+    result = validate_input(user_input)
+    # Preserve the original all-scope source terms used by memory summaries.
+    if result.get("intent") == "all_tables":
+        result["source_table"] = parse_table_input(user_input)
+    elif result.get("intent") == "all_columns":
+        result["source_column"] = parse_column_input(user_input)
+    return result
 
-    if intent in {"single_table", "all_tables"}:
-        update["source_table"] = parse_table_input(user_input)
-    if intent in {"single_column", "all_columns"}:
-        update["source_column"] = parse_column_input(user_input)
-    return update
+
+def route_by_validation(state: GraphState) -> str:
+    return state["validation_status"]
 
 
 async def load_metadata_node(state: GraphState) -> Dict:
