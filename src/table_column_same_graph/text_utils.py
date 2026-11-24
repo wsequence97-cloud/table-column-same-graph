@@ -5,7 +5,12 @@
 """
 
 import re
-from typing import Iterable, List, Sequence, Set
+from typing import Iterable, List, Set
+
+from table_column_same_graph.models import WindowRelation
+
+
+NameFeatures = tuple[frozenset[str], frozenset[str]]
 
 
 # 常见数仓层级、表类型和无业务含义的词，用于从中文 comment 中提取核心业务词。
@@ -59,15 +64,19 @@ ENGLISH_STOP_WORDS: Set[str] = {
 
 
 # 字段名尾部周期后缀，需求中特别要求 1d/14d/30d/60d/90d 等信息去尾。
-WINDOW_SUFFIX_RE = re.compile(r"_(?:\d+d|\d+day|\d+days)$", re.IGNORECASE)
+WINDOW_SUFFIX_RE = re.compile(r"_([0-9]+)(?:days?|d)$", re.IGNORECASE)
 
 
-# 业务同义词归一：先覆盖支付/付款这类指标治理高频词，后续可以继续从记忆文件中扩展。
+# 同义词按完整词元归一，保留编号（num）与数量（cnt）的区别。
 TOKEN_SYNONYMS = {
     "payment": "pay",
     "paid": "pay",
     "paying": "pay",
     "付款": "支付",
+    "amount": "amt",
+    "count": "cnt",
+    "number": "num",
+    "ratio": "rate",
 }
 
 
@@ -96,6 +105,27 @@ def strip_window_suffix(value: str) -> str:
     while WINDOW_SUFFIX_RE.search(normalized):
         normalized = WINDOW_SUFFIX_RE.sub("", normalized)
     return normalized
+
+
+def extract_window(raw_name: str) -> str | None:
+    """只识别末尾明确的正整数天数。复合窗口和自然周等口径留待复判。"""
+    identifier = (raw_name or "").strip().rsplit(".", 1)[-1].strip("`")
+    match = WINDOW_SUFFIX_RE.search(identifier)
+    if not match or WINDOW_SUFFIX_RE.search(identifier[:match.start()]):
+        return None
+    days = match.group(1).lstrip("0")
+    return days + "d" if days else None
+
+
+def compare_windows(left_window: str | None, right_window: str | None) -> WindowRelation:
+    """比较已提取的窗口，双方都缺失时也属于未知。"""
+    if left_window is None or right_window is None:
+        return "unknown"
+    return "same" if left_window == right_window else "different"
+
+
+def window_relation(raw_left: str, raw_right: str) -> WindowRelation:
+    return compare_windows(extract_window(raw_left), extract_window(raw_right))
 
 
 def split_english_identifier(value: str, drop_window_suffix: bool = False) -> List[str]:
@@ -155,7 +185,7 @@ def _normalize_token(token: str) -> str:
     return TOKEN_SYNONYMS.get(token, token)
 
 
-def token_overlap_score(source_tokens: Sequence[str], target_tokens: Sequence[str]) -> float:
+def token_overlap_score(source_tokens: Iterable[str], target_tokens: Iterable[str]) -> float:
     """计算“源词被目标词覆盖”的比例。
 
     用户需求强调“当前输入词汇数匹配大于阈值”进入下一阶段，所以分母固定为源词数。
@@ -168,6 +198,34 @@ def token_overlap_score(source_tokens: Sequence[str], target_tokens: Sequence[st
     if not source_set:
         return 0.0
     return len(source_set & target_set) / len(source_set)
+
+
+def name_features(name: str, comment: str, drop_window_suffix: bool = False) -> NameFeatures:
+    """提取可在同一次匹配中复用的英文名称词集和中文注释词集。"""
+    return (
+        frozenset(split_english_identifier(name, drop_window_suffix)),
+        frozenset(split_chinese_comment(comment)),
+    )
+
+
+def feature_similarity(source: NameFeatures, target: NameFeatures) -> float:
+    english, chinese = source
+    return max(
+        len(english & target[0]) / len(english) if english else 0.0,
+        len(chinese & target[1]) / len(chinese) if chinese else 0.0,
+    )
+
+
+def bidirectional_feature_similarity(left: NameFeatures, right: NameFeatures) -> tuple[float, float]:
+    """每个通道只求一次交集，再分别使用左右词数计算有方向的覆盖率。"""
+    left_en, left_zh = left
+    right_en, right_zh = right
+    en_count = len(left_en & right_en)
+    zh_count = len(left_zh & right_zh)
+    return (
+        max(safe_ratio(en_count, len(left_en)), safe_ratio(zh_count, len(left_zh))),
+        max(safe_ratio(en_count, len(right_en)), safe_ratio(zh_count, len(right_zh))),
+    )
 
 
 def mixed_name_similarity(
@@ -183,15 +241,10 @@ def mixed_name_similarity(
     阈值仍由调用方控制，表默认 60%，字段默认 75%。
     """
 
-    english_score = token_overlap_score(
-        split_english_identifier(source_name, drop_window_suffix=drop_window_suffix),
-        split_english_identifier(target_name, drop_window_suffix=drop_window_suffix),
+    return feature_similarity(
+        name_features(source_name, source_comment, drop_window_suffix),
+        name_features(target_name, target_comment, drop_window_suffix),
     )
-    chinese_score = token_overlap_score(
-        split_chinese_comment(source_comment),
-        split_chinese_comment(target_comment),
-    )
-    return max(english_score, chinese_score)
 
 
 def safe_ratio(numerator: int, denominator: int) -> float:

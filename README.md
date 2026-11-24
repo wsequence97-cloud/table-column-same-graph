@@ -1,5 +1,31 @@
 # 相似表与字段识别 V1
 
+## 规则匹配与风险上下文
+
+单表查询继续按用户输入的词集合计算覆盖率。全表使用 `combinations` 每对物理表比较一次，名称召回分数取两个方向的最大值，随后字段覆盖率也取两个方向的最大值。两阶段独立判断，仍使用原有 0.60 阈值。字段匹配阈值保持 0.75。全表先按库名、表名确定方向，分数相同时按完整资产标识排序。
+
+分词保留原有支付同义词，增加完整词元映射 `amount→amt`、`count→cnt`、`number→num`、`ratio→rate`。名称业务词和中文 Comment 词集在一次匹配内预处理并复用。双向计算共享词集交集，分别使用两侧词数作为分母，字段对的两个方向各自选择最佳匹配。
+
+字段原名保留，明确的正整数天数后缀如 `7d`、`7day`、`7days` 另存为 `7d`。两侧明确且相等标记 `same`，不同标记 `different`，缺失、自然周或无法确定时标记 `unknown`。窗口差异会随候选传入 LLM。
+
+表候选的可选 `diagnostics` 按 `source_to_target` 和 `target_to_source` 保存方向、名称分数、规则字段覆盖率、达到阈值的最佳字段映射和 `many_to_one`。多个源字段可以命中同一目标，仍沿用宽松覆盖率，同时报告风险。该分数不代表一对一结构覆盖率。LLM 候选最多携带每方向前 50 条映射，完整统计留在候选对象中。
+
+候选和复判上下文使用库名与表名组合定位资产。旧候选缺少库名时，仅在表名唯一时补齐上下文。CSV 原有列不含库名，治理人员核对同名资产时仍需参考候选对象中的物理标识。
+
+## 离线验收复现
+
+`tools/evaluate_rules.py` 从 Git 提交 `bebe863` 加载旧版算法，与工作区算法比较，使用 CSV 的人工标签重新算分，并核对 Excel 中的 52 组输入与标签。Excel 中的旧分数和公式仅供对照。表对缺少字段定义，标注集的表级结果评估名称与 Comment 召回，DDL 规则由补充测试覆盖。
+
+```powershell
+python tools/evaluate_rules.py --csv "标注测试案例.csv" --workbook "规则优化对照实验.xlsx"
+python tools/evaluate_rules.py --variant baseline
+python tools/evaluate_rules.py --variant optimized
+python tools/evaluate_rules.py --variant uncached
+python tools/evaluate_rules.py --variant forward
+```
+
+性能实验固定随机种子 `20261124`，共 600 张表、每表 8 至 12 个字段。`uncached` 只关闭预分词缓存，窗口诊断仍预提取。`forward` 保留新诊断，仅关闭反向计算，便于测量双向开销。添加 `--memory` 可单独测量 Python 分配峰值，开启内存追踪后的耗时应独立阅读。实际结果和边界见 [验收记录](validation/rules_20261124/README.md)。
+
 LangGraph 通过项目内部的官方 MCP Python SDK Client 连接数据平台已有的 MCP Server，读取字段级元数据；规则算法召回候选，大模型复判，输出 CSV 并记录本地 JSONL 记忆。项目不托管 MCP Server。实际平台连通性尚未验证。
 
 ## MCP 工具契约

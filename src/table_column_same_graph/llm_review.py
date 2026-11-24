@@ -10,9 +10,29 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from table_column_same_graph.models import ColumnMatch, GraphState, MetadataRow, TableMatch
+from table_column_same_graph.models import ColumnInfo, ColumnMatch, GraphState, MetadataRow, TableMatch
+
+
+_PROMPT_COLUMN_LIMIT = 50
+
+
+class _ReviewMetadata:
+    """每次复判共用的物理表和字段索引。旧候选缺库名时仅解析唯一表名。"""
+
+    def __init__(self, rows: Sequence[MetadataRow]):
+        self.tables: dict[tuple[str, str], dict[str, MetadataRow]] = {}
+        self.unambiguous_database: dict[str, str] = {}
+        for row in rows:
+            self.tables.setdefault((row.database_name, row.table_name), {})[row.column_name] = row
+        for database, table in self.tables:
+            if self.unambiguous_database.setdefault(table, database) != database:
+                self.unambiguous_database[table] = ""
+
+    def table_key(self, database: str, table: str) -> tuple[str, str]:
+        return database or self.unambiguous_database.get(table, ""), table
 
 
 @dataclass
@@ -268,10 +288,11 @@ def _review_table_matches(state: GraphState, client: OpenAICompatibleClient) -> 
         return [], _summary("required", reviewed=0, kept=0, filtered=0)
 
     batch_size = max(1, int(state.get("llm_batch_size", 20)))
+    metadata = _ReviewMetadata(state.get("metadata_rows", []))
     kept: List[TableMatch] = []
     reviewed = 0
     for batch in _batches(matches, batch_size):
-        candidates = _table_candidates(batch, state.get("metadata_rows", []), state)
+        candidates = _table_candidates(batch, metadata, state)
         decisions = _ask_model_for_decisions(client, "table", candidates)
         kept.extend(apply_table_decisions(batch, decisions))
         reviewed += len(batch)
@@ -286,10 +307,11 @@ def _review_column_matches(state: GraphState, client: OpenAICompatibleClient) ->
         return [], _summary("required", reviewed=0, kept=0, filtered=0)
 
     batch_size = max(1, int(state.get("llm_batch_size", 20)))
+    metadata = _ReviewMetadata(state.get("metadata_rows", []))
     kept: List[ColumnMatch] = []
     reviewed = 0
     for batch in _batches(matches, batch_size):
-        candidates = _column_candidates(batch, state.get("metadata_rows", []), state)
+        candidates = _column_candidates(batch, metadata, state)
         decisions = _ask_model_for_decisions(client, "column", candidates)
         kept.extend(apply_column_decisions(batch, decisions))
         reviewed += len(batch)
@@ -322,49 +344,62 @@ def _system_prompt(candidate_type: str) -> str:
     )
 
 
-def _table_candidates(matches: Sequence[TableMatch], rows: Sequence[MetadataRow], state: GraphState) -> List[Dict[str, Any]]:
+def _table_candidates(matches: Sequence[TableMatch], metadata: _ReviewMetadata, state: GraphState) -> List[Dict[str, Any]]:
     """构造表候选 prompt 内容。"""
 
-    columns_by_table = _columns_by_table(rows)
+    source_table = state.get("source_table")
+    ddl_columns = source_table.columns if source_table and state["intent"] == "single_table" else []
     candidates: List[Dict[str, Any]] = []
     for index, match in enumerate(matches):
-        source_columns = _source_table_columns(match, columns_by_table, state)
-        target_columns = columns_by_table.get(match.target_table_name, [])
+        source = metadata.table_key(match.source_database_name, match.source_table_name)
+        target = metadata.table_key(match.target_database_name, match.target_table_name)
         candidates.append(
             {
                 "index": index,
+                "source_database_name": match.source_database_name if ddl_columns else source[0],
                 "source_table_name": match.source_table_name,
                 "source_table_comment": match.source_table_comment,
                 "target_table_name": match.target_table_name,
+                "target_database_name": target[0],
                 "target_table_comment": match.target_table_comment,
                 "algorithm_name_similarity": round(match.name_similarity, 4),
                 "algorithm_field_similarity": None if match.field_similarity is None else round(match.field_similarity, 4),
-                "source_columns": source_columns[:50],
-                "target_columns": target_columns[:50],
+                "source_columns": _prompt_columns(ddl_columns or metadata.tables.get(source, {}).values()),
+                "target_columns": _prompt_columns(metadata.tables.get(target, {}).values()),
+                "diagnostics": {
+                    direction: {**details, "best_matches": details["best_matches"][:_PROMPT_COLUMN_LIMIT]}
+                    for direction, details in match.diagnostics.items()
+                },
             }
         )
     return candidates
 
 
-def _column_candidates(matches: Sequence[ColumnMatch], rows: Sequence[MetadataRow], state: GraphState) -> List[Dict[str, Any]]:
+def _column_candidates(matches: Sequence[ColumnMatch], metadata: _ReviewMetadata, state: GraphState) -> List[Dict[str, Any]]:
     """构造字段候选 prompt 内容。"""
 
-    column_lookup = _column_lookup(rows)
+    source_column = state.get("source_column") if state["intent"] == "single_column" else None
     candidates: List[Dict[str, Any]] = []
     for index, match in enumerate(matches):
-        source_meta = column_lookup.get((match.source_table_name, match.source_column_name), {})
-        target_meta = column_lookup.get((match.target_table_name, match.target_column_name), {})
-        source_column = state.get("source_column")
+        source = metadata.table_key(match.source_database_name, match.source_table_name)
+        target = metadata.table_key(match.target_database_name, match.target_table_name)
+        source_meta = metadata.tables.get(source, {}).get(match.source_column_name)
+        target_meta = metadata.tables.get(target, {}).get(match.target_column_name)
         candidates.append(
             {
                 "index": index,
+                "source_database_name": source[0],
                 "source_column_name": match.source_column_name,
                 "source_table_name": match.source_table_name,
-                "source_column_comment": getattr(source_column, "column_comment", "") or source_meta.get("column_comment", ""),
+                "source_column_comment": getattr(source_column, "column_comment", "") or getattr(source_meta, "column_comment", ""),
                 "target_column_name": match.target_column_name,
                 "target_table_name": match.target_table_name,
-                "target_column_comment": target_meta.get("column_comment", ""),
-                "target_table_comment": target_meta.get("table_comment", ""),
+                "target_database_name": target[0],
+                "target_column_comment": getattr(target_meta, "column_comment", ""),
+                "target_table_comment": getattr(target_meta, "table_comment", ""),
+                "source_window": match.source_window,
+                "target_window": match.target_window,
+                "window_relation": match.window_relation,
                 "algorithm_similarity": round(match.similarity, 4),
             }
         )
@@ -437,42 +472,11 @@ def _decision_map(decisions: Sequence[Dict[str, Any]]) -> Dict[int, Dict[str, An
     return mapped
 
 
-def _columns_by_table(rows: Sequence[MetadataRow]) -> Dict[str, List[Dict[str, str]]]:
-    """按表收集字段，用于表级复判上下文。"""
-
-    result: Dict[str, List[Dict[str, str]]] = {}
-    for row in rows:
-        result.setdefault(row.table_name, []).append(
-            {"column_name": row.column_name, "column_type": row.column_type, "column_comment": row.column_comment}
-        )
-    return result
-
-
-def _column_lookup(rows: Sequence[MetadataRow]) -> Dict[Tuple[str, str], Dict[str, str]]:
-    """构建字段元数据查找表。"""
-
-    result: Dict[Tuple[str, str], Dict[str, str]] = {}
-    for row in rows:
-        result[(row.table_name, row.column_name)] = {
-            "column_comment": row.column_comment,
-            "table_comment": row.table_comment,
-        }
-    return result
-
-
-def _source_table_columns(match: TableMatch, columns_by_table: Dict[str, List[Dict[str, str]]], state: GraphState) -> List[Dict[str, str]]:
-    """获取源表字段上下文。
-
-    DDL 单表查询优先使用用户输入中的字段；全表比对则从元数据中读取源表字段。
-    """
-
-    source_table = state.get("source_table")
-    if source_table and getattr(source_table, "columns", None):
-        return [
-            {"column_name": column.column_name, "column_type": column.column_type, "column_comment": column.column_comment}
-            for column in source_table.columns
-        ]
-    return columns_by_table.get(match.source_table_name, [])
+def _prompt_columns(columns: Iterable[ColumnInfo | MetadataRow]) -> list[dict[str, str]]:
+    return [
+        {"column_name": column.column_name, "column_type": column.column_type, "column_comment": column.column_comment}
+        for column in islice(columns, _PROMPT_COLUMN_LIMIT)
+    ]
 
 
 def _batches(values: Sequence[Any], batch_size: int) -> Iterable[Sequence[Any]]:

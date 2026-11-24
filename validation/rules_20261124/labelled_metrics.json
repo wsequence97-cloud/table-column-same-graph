@@ -1,0 +1,226 @@
+{
+  "baseline_revision": "bebe863",
+  "input_sha256": {
+    "D:\\Downloads\\V1_%E7%9B%B8%E4%BC%BC%E8%B5%84%E4%BA%A7_%E6%A0%87%E6%B3%A8%E6%B5%8B%E8%AF%95%E6%A1%88%E4%BE%8B.csv": "363d403dac756927026e57f4ca2df6b497b3eaab3a88e081ac2ddbdd1e8e8e5f",
+    "D:\\Downloads\\V1_相似资产_规则优化对照实验_设备监测业务.xlsx": "06cf07b455910d149c1c114dfe31d5d11a404912dda6cb00520187074a275901"
+  },
+  "sample_count": 52,
+  "workbook_crosscheck": "52 inputs and labels agree",
+  "metrics": {
+    "column_name": {
+      "baseline": {
+        "TP": 10,
+        "FP": 2,
+        "FN": 11,
+        "TN": 13,
+        "precision": 0.8333333333333334,
+        "recall": 0.47619047619047616,
+        "f1": 0.6060606060606061
+      },
+      "optimized": {
+        "TP": 13,
+        "FP": 2,
+        "FN": 8,
+        "TN": 13,
+        "precision": 0.8666666666666667,
+        "recall": 0.6190476190476191,
+        "f1": 0.7222222222222222
+      }
+    },
+    "column_comment": {
+      "baseline": {
+        "TP": 17,
+        "FP": 2,
+        "FN": 4,
+        "TN": 13,
+        "precision": 0.8947368421052632,
+        "recall": 0.8095238095238095,
+        "f1": 0.8500000000000001
+      },
+      "optimized": {
+        "TP": 17,
+        "FP": 2,
+        "FN": 4,
+        "TN": 13,
+        "precision": 0.8947368421052632,
+        "recall": 0.8095238095238095,
+        "f1": 0.8500000000000001
+      }
+    },
+    "table_recall": {
+      "baseline": {
+        "TP": 7,
+        "FP": 5,
+        "FN": 2,
+        "TN": 2,
+        "precision": 0.5833333333333334,
+        "recall": 0.7777777777777778,
+        "f1": 0.6666666666666666
+      },
+      "optimized": {
+        "TP": 8,
+        "FP": 5,
+        "FN": 1,
+        "TN": 2,
+        "precision": 0.6153846153846154,
+        "recall": 0.8888888888888888,
+        "f1": 0.7272727272727274
+      }
+    }
+  },
+  "new_recall": [
+    {
+      "case_id": "F10",
+      "category": "缩写不同",
+      "source_name": "defect_cnt",
+      "target_name": "defect_count",
+      "expected_candidate": "1",
+      "reason": "count/cnt缩写",
+      "mode": "column_name",
+      "baseline_score": 0.5,
+      "baseline_pred": 0,
+      "optimized_score": 1.0,
+      "optimized_pred": 1
+    },
+    {
+      "case_id": "F13",
+      "category": "同义表达",
+      "source_name": "trip_cnt",
+      "target_name": "trip_count",
+      "expected_candidate": "1",
+      "reason": "名称有业务词交集，Comment一致",
+      "mode": "column_name",
+      "baseline_score": 0.5,
+      "baseline_pred": 0,
+      "optimized_score": 1.0,
+      "optimized_pred": 1
+    },
+    {
+      "case_id": "F14",
+      "category": "名称相近",
+      "source_name": "load_rate",
+      "target_name": "load_ratio",
+      "expected_candidate": "1",
+      "reason": "不同英文名，同中文描述",
+      "mode": "column_name",
+      "baseline_score": 0.5,
+      "baseline_pred": 0,
+      "optimized_score": 1.0,
+      "optimized_pred": 1
+    },
+    {
+      "case_id": "T04",
+      "category": "同类缺陷",
+      "source_name": "DWS_RI_STAGING_DEFECT",
+      "target_name": "DWS_SP_PD_DEFECT",
+      "expected_candidate": "1",
+      "reason": "同一缺陷业务但系统过程不同，进入人工核实",
+      "mode": "table_recall",
+      "baseline_score": 0.48,
+      "baseline_pred": 0,
+      "optimized_score": 0.75,
+      "optimized_pred": 1
+    }
+  ],
+  "new_false_positive": [],
+  "regressions": [],
+  "ddl_reference": [
+    [
+      "ID",
+      "场景",
+      "源字段数",
+      "候选字段数",
+      "A→B覆盖率",
+      "B→A覆盖率",
+      "双向最大",
+      "一对一A→B",
+      "是否存在多对一虚高",
+      "业务含义"
+    ],
+    [
+      "D01",
+      "基础匹配 2/3",
+      3,
+      3,
+      0.6666666666666666,
+      0.6666666666666666,
+      "=MAX(E2,F2)",
+      0.6666666666666666,
+      "否",
+      "两个业务字段匹配，第三个不对应"
+    ],
+    [
+      "D02",
+      "多对一窗口虚高",
+      3,
+      1,
+      1,
+      1,
+      "=MAX(E3,F3)",
+      0.3333333333333333,
+      "是",
+      "不同时间窗口被名称标准化为alarm_cnt，可能全部覆盖同一目标字段"
+    ],
+    [
+      "D03",
+      "单向字段包含",
+      2,
+      4,
+      1,
+      0.5,
+      "=MAX(E4,F4)",
+      1,
+      "否",
+      "字段包含关系导致覆盖方向不同"
+    ],
+    [
+      "D04",
+      "字段类型差异",
+      1,
+      1,
+      1,
+      1,
+      "=MAX(E5,F5)",
+      1,
+      "否",
+      "当前V1忽略类型，只按名字和Comment匹配"
+    ],
+    [
+      "D05",
+      "不同名称同注释",
+      1,
+      1,
+      1,
+      1,
+      "=MAX(E6,F6)",
+      1,
+      "否",
+      "中文描述一致可弥补英文名称差异"
+    ],
+    [
+      "D06",
+      "不同度量对象",
+      1,
+      1,
+      0,
+      0,
+      "=MAX(E7,F7)",
+      0,
+      "否",
+      "名称cnt部分重合但业务事件不同"
+    ],
+    [
+      "D07",
+      "同名不同状态口径",
+      1,
+      1,
+      1,
+      1,
+      "=MAX(E8,F8)",
+      1,
+      "否",
+      "字段名相同未必代表口径一致"
+    ]
+  ],
+  "table_scope": "Name/comment recall only. Labelled table pairs have no field definitions."
+}

@@ -1,0 +1,33 @@
+         25980688 function calls (25980676 primitive calls) in 10.825 seconds
+
+   Ordered by: cumulative time
+   List reduced from 94 to 25 due to restriction <25>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.002    0.002   10.847   10.847 similarity.py:151(find_all_table_matches)
+        1    0.332    0.332   10.846   10.846 similarity.py:156(_find_all_table_matches)
+    14400    1.529    0.000    9.205    0.001 similarity.py:89(_field_coverages)
+  1624342    4.605    0.000    7.341    0.000 text_utils.py:219(bidirectional_feature_similarity)
+9947722/9947716    1.224    0.000    1.224    0.000 {built-in method builtins.len}
+  6526168    0.977    0.000    0.977    0.000 text_utils.py:250(safe_ratio)
+    28800    0.646    0.000    0.856    0.000 similarity.py:69(_coverage_report)
+  3442784    0.630    0.000    0.640    0.000 {built-in method builtins.max}
+  2889284    0.367    0.000    0.367    0.000 similarity.py:41(features)
+      600    0.006    0.000    0.177    0.000 similarity.py:53(prepare)
+     6010    0.011    0.000    0.151    0.000 similarity.py:36(prepare)
+     6610    0.010    0.000    0.130    0.000 text_utils.py:203(name_features)
+     6610    0.014    0.000    0.093    0.000 text_utils.py:131(split_english_identifier)
+   292436    0.081    0.000    0.081    0.000 {method 'append' of 'list' objects}
+    14400    0.060    0.000    0.079    0.000 similarity.py:109(_table_match)
+   265954    0.064    0.000    0.064    0.000 {method 'add' of 'set' objects}
+     6010    0.005    0.000    0.062    0.000 text_utils.py:97(strip_window_suffix)
+     6610    0.013    0.000    0.058    0.000 text_utils.py:83(normalize_identifier)
+   359400    0.055    0.000    0.055    0.000 similarity.py:63(features)
+    13220    0.010    0.000    0.038    0.000 __init__.py:183(sub)
+   265954    0.036    0.000    0.036    0.000 text_utils.py:120(compare_windows)
+     6610    0.006    0.000    0.027    0.000 text_utils.py:142(split_chinese_comment)
+     6010    0.014    0.000    0.024    0.000 text_utils.py:110(extract_window)
+    19830    0.012    0.000    0.021    0.000 __init__.py:330(_compile)
+        1    0.015    0.015    0.019    0.019 similarity.py:15(dedupe_tables)
+
+

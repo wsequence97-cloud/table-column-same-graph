@@ -1,0 +1,9 @@
+{
+  "physical_tables": 600,
+  "field_rows": 6010,
+  "field_pairs_scanned": 18057045,
+  "candidate_count": 2019964,
+  "seconds_with_tracemalloc": 36.53660640004091,
+  "peak_python_mib": 3.7662925720214844,
+  "scope": "All pairs scored on the complete dataset. Candidate objects and sorting excluded. Normal all-column entry point not benchmarked."
+}

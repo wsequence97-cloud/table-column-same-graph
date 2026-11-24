@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 # 用户意图类型：表单次查询、字段单次查询、全表比对、全字段/指标比对。
 Intent = Literal["single_table", "single_column", "all_tables", "all_columns"]
+WindowRelation = Literal["same", "different", "unknown"]
 
 
 @dataclass
@@ -25,6 +26,7 @@ class ColumnInfo:
     column_comment: str = ""
     table_name: str = ""
     table_comment: str = ""
+    database_name: str = ""
 
 
 @dataclass
@@ -75,6 +77,9 @@ class TableMatch:
     llm_is_similar: Optional[bool] = None
     # 模型给出的简短判断理由，默认不写入 CSV，但会沉淀到 memory 供治理复盘。
     llm_reason: str = ""
+    source_database_name: str = ""
+    target_database_name: str = ""
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -90,6 +95,11 @@ class ColumnMatch:
     llm_is_similar: Optional[bool] = None
     # 模型给出的简短判断理由，默认不写入 CSV，但会沉淀到 memory 供治理复盘。
     llm_reason: str = ""
+    source_database_name: str = ""
+    target_database_name: str = ""
+    source_window: Optional[str] = None
+    target_window: Optional[str] = None
+    window_relation: WindowRelation = "unknown"
 
 
 class GraphState(TypedDict, total=False):

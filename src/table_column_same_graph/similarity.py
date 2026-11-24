@@ -1,243 +1,240 @@
-"""相似度计算逻辑。
+"""规则相似度：表名召回、字段覆盖率与字段候选诊断。"""
 
-本模块只负责业务判断，不关心数据来自 Hive 还是 CSV，也不负责写文件。
-这样 LangGraph 节点可以把它当作纯函数使用，便于单元测试。
-"""
-
-from collections import defaultdict
+from dataclasses import dataclass
 from itertools import combinations
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence
 
 from table_column_same_graph.config import SIMILARITY_CONFIG
 from table_column_same_graph.models import ColumnInfo, ColumnMatch, MetadataRow, TableInfo, TableMatch
-from table_column_same_graph.text_utils import mixed_name_similarity, safe_ratio
+from table_column_same_graph.text_utils import (
+    NameFeatures, bidirectional_feature_similarity, compare_windows, extract_window,
+    feature_similarity, mixed_name_similarity, name_features, safe_ratio,
+)
 
 
 def dedupe_tables(rows: Sequence[MetadataRow]) -> List[TableInfo]:
-    """从字段粒度元数据中去重得到表粒度信息。
-
-    zz.dwd_meta_table_columns_detail_df 每一行是一个字段，因此表名匹配前必须先按库名+表名去重；
-    同时把同表字段收集起来，后续字段集合相似可以复用。
-    """
-
-    tables: Dict[Tuple[str, str], TableInfo] = {}
+    """将字段按物理表 (database_name, table_name) 归组。"""
+    tables = {}
     for row in rows:
         key = (row.database_name, row.table_name)
         if key not in tables:
-            tables[key] = TableInfo(
-                database_name=row.database_name,
-                table_name=row.table_name,
-                table_comment=row.table_comment,
-                columns=[],
-            )
-        tables[key].columns.append(
-            ColumnInfo(
-                table_name=row.table_name,
-                table_comment=row.table_comment,
-                column_name=row.column_name,
-                column_type=row.column_type,
-                column_comment=row.column_comment,
-            )
-        )
+            tables[key] = TableInfo(table_name=row.table_name, table_comment=row.table_comment,
+                                    database_name=row.database_name)
+        tables[key].columns.append(ColumnInfo(
+            table_name=row.table_name, table_comment=row.table_comment, database_name=row.database_name,
+            column_name=row.column_name, column_type=row.column_type, column_comment=row.column_comment,
+        ))
     return list(tables.values())
 
 
+@dataclass(slots=True)
+class _Field:
+    column: ColumnInfo | MetadataRow
+    tokens: NameFeatures | None
+    window: str | None
+
+    @classmethod
+    def prepare(cls, column, use_cache=True):
+        tokens = name_features(column.column_name, column.column_comment, True) if use_cache else None
+        return cls(column, tokens, extract_window(column.column_name))
+
+    def features(self):
+        if self.tokens is not None:
+            return self.tokens
+        return name_features(self.column.column_name, self.column.column_comment, True)
+
+
+@dataclass(slots=True)
+class _Table:
+    table: TableInfo
+    tokens: NameFeatures | None
+    fields: list[_Field]
+
+    @classmethod
+    def prepare(cls, table, use_cache=True, include_fields=True):
+        tokens = name_features(table.table_name, table.table_comment) if use_cache else None
+        # 同分时选择字典序最小的目标字段，使映射独立于分页和字段排列。
+        fields = []
+        if include_fields:
+            for col in sorted(table.columns, key=lambda col: col.column_name):
+                fields.append(_Field.prepare(col, use_cache))
+        return cls(table, tokens, fields)
+
+    def features(self):
+        if self.tokens is not None:
+            return self.tokens
+        return name_features(self.table.table_name, self.table.table_comment)
+
+
+def _coverage_report(source, target, best_matches):
+    mappings = []
+    used_targets = set()
+    for field, (score, target_index) in zip(source, best_matches):
+        if target_index is None or score < SIMILARITY_CONFIG.table_column_threshold:
+            continue
+        best = target[target_index]
+        used_targets.add(target_index)
+        mappings.append({
+            "source_column": field.column.column_name, "target_column": best.column.column_name,
+            "similarity": score, "source_window": field.window, "target_window": best.window,
+            "window_relation": compare_windows(field.window, best.window),
+        })
+    return {
+        "field_coverage": safe_ratio(len(mappings), len(source)),
+        "source_field_count": len(source), "matched_field_count": len(mappings),
+        "many_to_one": len(mappings) > len(used_targets), "best_matches": mappings,
+    }
+
+
+def _field_coverages(left, right, bidirectional):
+    """单次遍历字段对，每个方向独立选最佳匹配，空间不随字段对数量增长。"""
+    left_best = [(0.0, None)] * len(left)
+    right_best = [(0.0, None)] * len(right) if bidirectional else []
+    for i, a in enumerate(left):
+        for j, b in enumerate(right):
+            if bidirectional:
+                forward, reverse = bidirectional_feature_similarity(a.features(), b.features())
+                if reverse > right_best[j][0]:
+                    right_best[j] = (reverse, i)
+            else:
+                forward = feature_similarity(a.features(), b.features())
+            if forward > left_best[i][0]:
+                left_best[i] = (forward, j)
+    reports = {"source_to_target": _coverage_report(left, right, left_best)}
+    if bidirectional:
+        reports["target_to_source"] = _coverage_report(right, left, right_best)
+    return reports
+
+
+def _table_match(left, right, name_score, field_score=None, diagnostics=None):
+    return TableMatch(
+        source_table_name=left.table_name, source_table_comment=left.table_comment,
+        source_database_name=left.database_name, target_database_name=right.database_name,
+        target_table_name=right.table_name, target_table_comment=right.table_comment,
+        name_similarity=name_score, field_similarity=field_score, diagnostics=diagnostics or {},
+    )
+
+
+def _table_rank(match):
+    score = match.name_similarity if match.field_similarity is None else match.field_similarity
+    return (-score, match.source_database_name, match.source_table_name,
+            match.target_database_name, match.target_table_name)
+
+
 def find_single_table_matches(source_table: TableInfo, rows: Sequence[MetadataRow]) -> List[TableMatch]:
-    """查找单个输入表的相似表。
-
-    处理两种场景：
-    1. 只有表名/表中文名：输出表名或中文名相似度大于 60% 的表；
-    2. 输入完整 DDL：先按表名/中文名召回，再用字段匹配比例过滤，字段一致比例需大于 60%。
-    """
-
+    """保留用户输入到目标的名称及 DDL 字段覆盖率。"""
     tables = dedupe_tables(rows)
-    has_source_columns = bool(source_table.columns)
-    matches: List[TableMatch] = []
-
-    for target_table in tables:
-        # 如果源表名等于目标表名，说明是同一张表，不作为治理相似候选输出。
-        if source_table.table_name and source_table.table_name == target_table.table_name:
+    source = _Table.prepare(source_table)
+    same_name_count = sum(table.table_name == source_table.table_name for table in tables)
+    matches = []
+    for table in tables:
+        if source_table.table_name == table.table_name and (
+            source_table.database_name == table.database_name
+            or (not source_table.database_name and same_name_count == 1)
+        ):
             continue
-
-        name_similarity = table_name_similarity(source_table, target_table)
-        if name_similarity < SIMILARITY_CONFIG.table_name_threshold:
+        target = _Table.prepare(table, include_fields=bool(source.fields))
+        name_score = feature_similarity(source.features(), target.features())
+        if name_score < SIMILARITY_CONFIG.table_name_threshold:
             continue
-
-        if not has_source_columns:
-            matches.append(
-                TableMatch(
-                    source_table_name=source_table.table_name,
-                    source_table_comment=source_table.table_comment,
-                    target_table_name=target_table.table_name,
-                    target_table_comment=target_table.table_comment,
-                    name_similarity=name_similarity,
-                )
-            )
+        if not source.fields:
+            matches.append(_table_match(source_table, table, name_score))
             continue
-
-        field_similarity = table_field_similarity(source_table.columns, target_table.columns)
-        if field_similarity >= SIMILARITY_CONFIG.table_column_threshold:
-            matches.append(
-                TableMatch(
-                    source_table_name=source_table.table_name,
-                    source_table_comment=source_table.table_comment,
-                    target_table_name=target_table.table_name,
-                    target_table_comment=target_table.table_comment,
-                    name_similarity=name_similarity,
-                    field_similarity=field_similarity,
-                )
-            )
-
-    return sorted(matches, key=lambda item: (item.field_similarity or item.name_similarity), reverse=True)
+        report = _field_coverages(source.fields, target.fields, bidirectional=False)
+        forward = report["source_to_target"]
+        forward["name_score"] = name_score
+        if forward["field_coverage"] >= SIMILARITY_CONFIG.table_column_threshold:
+            matches.append(_table_match(source_table, table, name_score, forward["field_coverage"], report))
+    return sorted(matches, key=_table_rank)
 
 
 def find_all_table_matches(rows: Sequence[MetadataRow]) -> List[TableMatch]:
-    """全表比对。
+    """全表两阶段分别取两个方向的最大值，每对物理表只输出一次。"""
+    return _find_all_table_matches(rows)
 
-    combinations(tables, 2) 天然只产生 A-B，不产生 B-A，满足用户“表名 a 比对完表名 b 后去重”的要求。
-    """
 
-    tables = dedupe_tables(rows)
-    matches: List[TableMatch] = []
-
-    for left_table, right_table in combinations(tables, 2):
-        name_similarity = table_name_similarity(left_table, right_table)
-        # 全表比对仍沿用“表名及 comment 相似进入字段阶段”的规则，避免全仓字段笛卡尔过大。
-        if name_similarity < SIMILARITY_CONFIG.table_name_threshold:
+def _find_all_table_matches(rows, *, use_cache=True, bidirectional=True):
+    """基准实验可关闭预分词或反向计算，生产入口使用默认策略。"""
+    ordered = sorted(dedupe_tables(rows), key=lambda t: (t.database_name, t.table_name))
+    tables = [_Table.prepare(t, use_cache) for t in ordered]
+    matches = []
+    for left, right in combinations(tables, 2):
+        if bidirectional:
+            forward, reverse = bidirectional_feature_similarity(left.features(), right.features())
+            name_score = max(forward, reverse)
+        else:
+            forward = name_score = feature_similarity(left.features(), right.features())
+        if name_score < SIMILARITY_CONFIG.table_name_threshold:
             continue
+        report = _field_coverages(left.fields, right.fields, bidirectional)
+        report["source_to_target"]["name_score"] = forward
+        if bidirectional:
+            report["target_to_source"]["name_score"] = reverse
+        field_score = max(direction["field_coverage"] for direction in report.values())
+        if field_score >= SIMILARITY_CONFIG.all_table_field_threshold:
+            matches.append(_table_match(left.table, right.table, name_score, field_score, report))
+    return sorted(matches, key=_table_rank)
 
-        field_similarity = table_field_similarity(left_table.columns, right_table.columns)
-        if field_similarity >= SIMILARITY_CONFIG.all_table_field_threshold:
-            matches.append(
-                TableMatch(
-                    source_table_name=left_table.table_name,
-                    source_table_comment=left_table.table_comment,
-                    target_table_name=right_table.table_name,
-                    target_table_comment=right_table.table_comment,
-                    name_similarity=name_similarity,
-                    field_similarity=field_similarity,
-                )
-            )
 
-    return sorted(matches, key=lambda item: item.field_similarity or 0.0, reverse=True)
+def _column_match(left, right, score):
+    a, b = left.column, right.column
+    return ColumnMatch(
+        source_column_name=a.column_name, source_table_name=a.table_name, source_database_name=a.database_name,
+        target_column_name=b.column_name, target_table_name=b.table_name, target_database_name=b.database_name,
+        similarity=score, source_window=left.window, target_window=right.window,
+        window_relation=compare_windows(left.window, right.window),
+    )
+
+
+def _column_rank(match):
+    return (-match.similarity, match.source_database_name, match.source_table_name, match.source_column_name,
+            match.target_database_name, match.target_table_name, match.target_column_name)
 
 
 def find_single_column_matches(source_column: ColumnInfo, rows: Sequence[MetadataRow]) -> List[ColumnMatch]:
-    """查找单个输入字段/指标的相似字段。
-
-    中文 comment 和英文字段名分别计算覆盖率，取最大值；
-    阈值为 75%，并且字段名会去掉 1d/30d/90d 等尾部窗口后缀。
-    """
-
-    matches: List[ColumnMatch] = []
+    source = _Field.prepare(source_column)
+    matches = []
     for row in rows:
-        target_column = ColumnInfo(
-            table_name=row.table_name,
-            table_comment=row.table_comment,
-            column_name=row.column_name,
-            column_type=row.column_type,
-            column_comment=row.column_comment,
-        )
-        similarity = column_similarity(source_column, target_column)
-        if similarity >= SIMILARITY_CONFIG.column_threshold:
-            matches.append(
-                ColumnMatch(
-                    source_column_name=source_column.column_name,
-                    source_table_name=source_column.table_name,
-                    target_column_name=row.column_name,
-                    target_table_name=row.table_name,
-                    similarity=similarity,
-                )
-            )
-
-    return sorted(matches, key=lambda item: item.similarity, reverse=True)
+        target = _Field.prepare(row)
+        score = feature_similarity(source.tokens, target.tokens)
+        if score >= SIMILARITY_CONFIG.column_threshold:
+            matches.append(_column_match(source, target, score))
+    return sorted(matches, key=_column_rank)
 
 
 def find_all_column_matches(rows: Sequence[MetadataRow]) -> List[ColumnMatch]:
-    """全字段/全指标比对。
-
-    先按字段名聚合，再使用 combinations 做字段对去重；
-    如果同名字段分布在多张表，每个字段实例仍会保留表名，便于治理定位。
-    """
-
-    columns = [
-        ColumnInfo(
-            table_name=row.table_name,
-            table_comment=row.table_comment,
-            column_name=row.column_name,
-            column_type=row.column_type,
-            column_comment=row.column_comment,
-        )
-        for row in rows
-    ]
-    matches: List[ColumnMatch] = []
-
-    for left_column, right_column in combinations(columns, 2):
-        # 同一张表同一个字段不需要与自己匹配；源表不同但字段相似才是治理价值点。
-        if left_column.table_name == right_column.table_name and left_column.column_name == right_column.column_name:
+    """沿用字段输入顺序和单向分数，每个物理字段对只比较一次。"""
+    fields = [_Field.prepare(row) for row in rows]
+    matches = []
+    for left, right in combinations(fields, 2):
+        a, b = left.column, right.column
+        if (a.column_name == b.column_name and a.table_name == b.table_name and a.database_name == b.database_name):
             continue
-        similarity = column_similarity(left_column, right_column)
-        if similarity >= SIMILARITY_CONFIG.all_column_threshold:
-            matches.append(
-                ColumnMatch(
-                    source_column_name=left_column.column_name,
-                    source_table_name=left_column.table_name,
-                    target_column_name=right_column.column_name,
-                    target_table_name=right_column.table_name,
-                    similarity=similarity,
-                )
-            )
-
-    return sorted(matches, key=lambda item: item.similarity, reverse=True)
+        score = feature_similarity(left.tokens, right.tokens)
+        if score >= SIMILARITY_CONFIG.all_column_threshold:
+            matches.append(_column_match(left, right, score))
+    return sorted(matches, key=_column_rank)
 
 
 def table_name_similarity(source_table: TableInfo, target_table: TableInfo) -> float:
-    """计算表名/表中文名相似度。"""
-
-    return mixed_name_similarity(
-        source_table.table_name,
-        source_table.table_comment,
-        target_table.table_name,
-        target_table.table_comment,
-    )
+    return mixed_name_similarity(source_table.table_name, source_table.table_comment,
+                                 target_table.table_name, target_table.table_comment)
 
 
 def column_similarity(source_column: ColumnInfo, target_column: ColumnInfo) -> float:
-    """计算字段/指标相似度。"""
-
-    return mixed_name_similarity(
-        source_column.column_name,
-        source_column.column_comment,
-        target_column.column_name,
-        target_column.column_comment,
-        drop_window_suffix=True,
-    )
+    return mixed_name_similarity(source_column.column_name, source_column.column_comment,
+                                 target_column.column_name, target_column.column_comment, drop_window_suffix=True)
 
 
 def table_field_similarity(source_columns: Sequence[ColumnInfo], target_columns: Sequence[ColumnInfo]) -> float:
-    """计算源表字段被目标表字段覆盖的比例。
-
-    对源表每个字段，只要目标表存在一个字段相似度 >= 60%，就认为该字段被匹配；
-    最终相似度 = 已匹配源字段数 / 源字段总数。
-    """
-
-    if not source_columns:
-        return 0.0
-
-    matched_source_count = 0
-    for source_column in source_columns:
-        if best_column_similarity(source_column, target_columns) >= SIMILARITY_CONFIG.table_column_threshold:
-            matched_source_count += 1
-    return safe_ratio(matched_source_count, len(source_columns))
+    left = [_Field.prepare(col) for col in source_columns]
+    right = [_Field.prepare(col) for col in target_columns]
+    return _field_coverages(left, right, bidirectional=False)["source_to_target"]["field_coverage"]
 
 
 def best_column_similarity(source_column: ColumnInfo, target_columns: Iterable[ColumnInfo]) -> float:
-    """返回源字段与目标字段集合中的最高相似度。"""
-
-    best_score = 0.0
-    for target_column in target_columns:
-        best_score = max(best_score, column_similarity(source_column, target_column))
-    return best_score
+    source = _Field.prepare(source_column)
+    return max((feature_similarity(source.tokens, _Field.prepare(col).tokens) for col in target_columns), default=0.0)
 
 
 def summarize_table_terms(table: TableInfo) -> Dict[str, List[str]]:

@@ -1,0 +1,15 @@
+{
+  "variant": "baseline",
+  "seed": 20261124,
+  "physical_tables": 600,
+  "field_rows": 6010,
+  "possible_table_pairs": 179700,
+  "seconds": 23.294765300117433,
+  "tracemalloc_enabled": false,
+  "peak_python_mib": null,
+  "field_stage_pairs": 14400,
+  "rule_candidates": 14400,
+  "python": "3.13.9",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "baseline_revision": "bebe863"
+}
